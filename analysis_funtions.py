@@ -417,13 +417,16 @@ def calculate_event_statistics(df, inv_power, rlc_power, event_num, trial, fault
     # Average initial RMS across all phases
     vrms_initial = (va_rms_initial + vb_rms_initial + vc_rms_initial) / 3
     
-    # Find minimum RMS voltage across all RMS columns
+    # Find minimum RMS voltage across all RMS columns (excluding last 100 samples)
     rms_columns = ['RMS_VA_T', 'RMS_VB_T', 'RMS_VC_T']
     vrms_min = float('inf')
     
+    # Use data excluding the last 100 samples
+    data_for_min = df.iloc[:-100] if len(df) > 100 else df
+    
     for col in rms_columns:
-        if col in df.columns:
-            col_min = df[col].dropna().min()
+        if col in data_for_min.columns:
+            col_min = data_for_min[col].dropna().min()
             if col_min < vrms_min:
                 vrms_min = col_min
     
@@ -472,115 +475,135 @@ def calculate_event_statistics(df, inv_power, rlc_power, event_num, trial, fault
         if peak_violation == 1:
             break  # Stop checking cycles once violation is found
     
-    # Find duration each phase RMS voltage stays below 95% threshold
-    rms_phase_mapping = {
-        'RMS_VA_T': 'VA_below_95_duration',
-        'RMS_VB_T': 'VB_below_95_duration', 
-        'RMS_VC_T': 'VC_below_95_duration'
+    # Find duration each phase RMS voltage stays below multiple thresholds
+    # Define thresholds as percentages of nominal voltage (480V / sqrt(3))
+    nominal_rms = 480 / np.sqrt(3)  # ≈ 277.13V
+    thresholds = {
+        '0': nominal_rms * 0.00,    # 0%
+        '70': nominal_rms * 0.70,   # 70%
+        '73': nominal_rms * 0.73,   # 73%
+        '80': nominal_rms * 0.80,   # 80%
+        '86': nominal_rms * 0.86,   # 86%
+        '88': nominal_rms * 0.88,   # 88%
+        '89': nominal_rms * 0.89,   # 89%
+        '90': nominal_rms * 0.90,   # 90%
+        '95': nominal_rms * 0.95    # 95%
     }
     
-    below_95_durations = {}
+    rms_phase_mapping = {
+        'RMS_VA_T': 'VA',
+        'RMS_VB_T': 'VB', 
+        'RMS_VC_T': 'VC'
+    }
     
-    for rms_col, duration_col in rms_phase_mapping.items():
+    below_threshold_durations = {}
+    
+    # Calculate durations for each phase and each threshold
+    for rms_col, phase_name in rms_phase_mapping.items():
         if rms_col in df.columns:
-            if fault_time is not None:
-                # Find the fault time index
-                fault_index = (df['timestamp'] - fault_time).abs().idxmin()
+            for threshold_name, threshold_value in thresholds.items():
+                duration_col = f'{phase_name}_below_{threshold_name}_duration'
                 
-                # Define the analysis window: from fault time to 7 cycles later
-                # 7 cycles = 7 * 32 samples = 224 samples
-                end_index = min(fault_index + 7 * 32, len(df) - 1)
-                
-                # Get data from fault time to 7 cycles later
-                analysis_data = df.iloc[fault_index:end_index + 1].copy()
-                
-                # Get valid (non-NaN) RMS data within analysis window
-                valid_data = analysis_data[analysis_data[rms_col].notna()]
-                
-                if not valid_data.empty:
-                    # Find indices where RMS voltage is below threshold
-                    below_threshold = valid_data[valid_data[rms_col] < threshold_95_rms]
+                if fault_time is not None:
+                    # Find the fault time index
+                    fault_index = (df['timestamp'] - fault_time).abs().idxmin()
                     
-                    if not below_threshold.empty:
-                        # Find first time below threshold
-                        first_below_index = below_threshold.index[0]
-                        first_below_time = df.loc[first_below_index, 'timestamp']
+                    # Define the analysis window: from fault time to 7 cycles later
+                    # 7 cycles = 7 * 32 samples = 224 samples
+                    end_index = min(fault_index + 7 * 32, len(df) - 1)
+                    
+                    # Get data from fault time to 7 cycles later
+                    analysis_data = df.iloc[fault_index:end_index + 1].copy()
+                    
+                    # Get valid (non-NaN) RMS data within analysis window
+                    valid_data = analysis_data[analysis_data[rms_col].notna()]
+                    
+                    if not valid_data.empty and len(valid_data) > 1:
+                        # Find transition points by comparing consecutive values
+                        go_below_time = None
+                        go_above_time = None
                         
-                        # Find last time below threshold
-                        last_below_index = below_threshold.index[-1]
-                        last_below_time = df.loc[last_below_index, 'timestamp']
+                        # Iterate through consecutive pairs of data points
+                        for i in range(len(valid_data) - 1):
+                            current_idx = valid_data.index[i]
+                            next_idx = valid_data.index[i + 1]
+                            
+                            current_val = valid_data.iloc[i][rms_col]
+                            next_val = valid_data.iloc[i + 1][rms_col]
+                            
+                            # Check for transition from above to below threshold
+                            if (current_val >= threshold_value and next_val < threshold_value 
+                                and go_below_time is None):
+                                go_below_time = df.loc[next_idx, 'timestamp']
+                            
+                            # Check for transition from below to above threshold
+                            if (current_val < threshold_value and next_val >= threshold_value 
+                                and go_below_time is not None and go_above_time is None):
+                                go_above_time = df.loc[next_idx, 'timestamp']
+                                break  # Found both transitions, stop looking
                         
-                        # Check if voltage recovers after the last below-threshold point within analysis window
-                        remaining_data = valid_data[valid_data.index > last_below_index]
-                        recovery_found = False
-                        recovery_time = last_below_time
-                        
-                        if not remaining_data.empty:
-                            # Find first point after last below-threshold that is above threshold
-                            above_threshold = remaining_data[remaining_data[rms_col] >= threshold_95_rms]
-                            if not above_threshold.empty:
-                                recovery_index = above_threshold.index[0]
-                                recovery_time = df.loc[recovery_index, 'timestamp']
-                                recovery_found = True
-                        
-                        # Calculate duration
-                        if recovery_found:
-                            duration = recovery_time - first_below_time
-                        else:
-                            # If no recovery found within 7 cycles, use time until end of analysis window
+                        # Calculate duration if both transitions were found
+                        if go_below_time is not None and go_above_time is not None:
+                            duration = go_above_time - go_below_time
+                            below_threshold_durations[duration_col] = round(duration, 4)
+                        elif go_below_time is not None and go_above_time is None:
+                            # Went below but never recovered within analysis window
                             end_time = df.loc[end_index, 'timestamp']
-                            duration = end_time - first_below_time
-                        
-                        below_95_durations[duration_col] = round(duration, 4)
-                    else:
-                        below_95_durations[duration_col] = 0.0  # Never dropped below threshold
-                else:
-                    below_95_durations[duration_col] = None  # No valid RMS data
-            else:
-                # Fallback to original method if no fault time provided
-                # Get valid (non-NaN) RMS data
-                valid_data = df[df[rms_col].notna()]
-                
-                if not valid_data.empty:
-                    # Find indices where RMS voltage is below threshold
-                    below_threshold = valid_data[valid_data[rms_col] < threshold_95_rms]
-                    
-                    if not below_threshold.empty:
-                        # Find first time below threshold
-                        first_below_index = below_threshold.index[0]
-                        first_below_time = df.loc[first_below_index, 'timestamp']
-                        
-                        # Find last time below threshold
-                        last_below_index = below_threshold.index[-1]
-                        last_below_time = df.loc[last_below_index, 'timestamp']
-                        
-                        # Check if voltage recovers after the last below-threshold point
-                        remaining_data = valid_data[valid_data.index > last_below_index]
-                        recovery_found = False
-                        recovery_time = last_below_time
-                        
-                        if not remaining_data.empty:
-                            # Find first point after last below-threshold that is above threshold
-                            above_threshold = remaining_data[remaining_data[rms_col] >= threshold_95_rms]
-                            if not above_threshold.empty:
-                                recovery_index = above_threshold.index[0]
-                                recovery_time = df.loc[recovery_index, 'timestamp']
-                                recovery_found = True
-                        
-                        # Calculate duration
-                        if recovery_found:
-                            duration = recovery_time - first_below_time
+                            duration = end_time - go_below_time
+                            below_threshold_durations[duration_col] = round(duration, 4)
                         else:
-                            # If no recovery found, use time until end of valid data
-                            duration = last_below_time - first_below_time
-                        
-                        below_95_durations[duration_col] = round(duration, 4)
+                            # Never went below threshold
+                            below_threshold_durations[duration_col] = 0.0
                     else:
-                        below_95_durations[duration_col] = 0.0  # Never dropped below threshold
+                        below_threshold_durations[duration_col] = None  # No valid RMS data
                 else:
-                    below_95_durations[duration_col] = None  # No valid RMS data
+                    # Fallback to original method if no fault time provided
+                    # Get valid (non-NaN) RMS data
+                    valid_data = df[df[rms_col].notna()]
+                    
+                    if not valid_data.empty and len(valid_data) > 1:
+                        # Find transition points by comparing consecutive values
+                        go_below_time = None
+                        go_above_time = None
+                        
+                        # Iterate through consecutive pairs of data points
+                        for i in range(len(valid_data) - 1):
+                            current_idx = valid_data.index[i]
+                            next_idx = valid_data.index[i + 1]
+                            
+                            current_val = valid_data.iloc[i][rms_col]
+                            next_val = valid_data.iloc[i + 1][rms_col]
+                            
+                            # Check for transition from above to below threshold
+                            if (current_val >= threshold_value and next_val < threshold_value 
+                                and go_below_time is None):
+                                go_below_time = df.loc[next_idx, 'timestamp']
+                            
+                            # Check for transition from below to above threshold
+                            if (current_val < threshold_value and next_val >= threshold_value 
+                                and go_below_time is not None and go_above_time is None):
+                                go_above_time = df.loc[next_idx, 'timestamp']
+                                break  # Found both transitions, stop looking
+                        
+                        # Calculate duration if both transitions were found
+                        if go_below_time is not None and go_above_time is not None:
+                            duration = go_above_time - go_below_time
+                            below_threshold_durations[duration_col] = round(duration, 4)
+                        elif go_below_time is not None and go_above_time is None:
+                            # Went below but never recovered
+                            last_time = df.loc[valid_data.index[-1], 'timestamp']
+                            duration = last_time - go_below_time
+                            below_threshold_durations[duration_col] = round(duration, 4)
+                        else:
+                            # Never went below threshold
+                            below_threshold_durations[duration_col] = 0.0
+                    else:
+                        below_threshold_durations[duration_col] = None  # No valid RMS data
         else:
-            below_95_durations[duration_col] = None
+            # If RMS column doesn't exist, set all thresholds to None for this phase
+            for threshold_name in thresholds.keys():
+                duration_col = f'{phase_name}_below_{threshold_name}_duration'
+                below_threshold_durations[duration_col] = None
     
     # Calculate maximum voltage THD using THD table functionality
     # Use the same parameters as the main analysis (2 cycles pre, 7 cycles post)
@@ -624,8 +647,8 @@ def calculate_event_statistics(df, inv_power, rlc_power, event_num, trial, fault
         'peak_violation': peak_violation
     }
     
-    # Add the below-95% duration data
-    stats.update(below_95_durations)
+    # Add the below-threshold duration data for all thresholds
+    stats.update(below_threshold_durations)
     
     return stats
 

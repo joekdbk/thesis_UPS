@@ -51,6 +51,12 @@ for file in csv_files:
     try:
         df = af.raw_csv_to_df_add_rms(file)
 
+        # Save the processed dataframe to CSV in output_plots folder
+        current_time = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        df_filename = f"output_plots/dataframe_INV{inv_power}_RLC{rlc_power}_T{trial}_E{event_num}_{current_time}.csv"
+        df.to_csv(df_filename, index=False)
+        print(f"Dataframe saved to: {df_filename}")
+
         # Use fault time from data dictionary (already converted to seconds above)
         num_cycles_pre = 2
         num_cycles_post = 7

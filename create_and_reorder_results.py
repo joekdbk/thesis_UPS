@@ -25,15 +25,30 @@ def create_and_reorder_joined_results():
     columns_to_drop = ['INV_power', 'RLC_power', 'Trial_dict']
     joined_results = joined_results.drop(columns=[col for col in columns_to_drop if col in joined_results.columns])
     
-    # Reorder columns for better readability
+    # Reorder columns for better readability - include all columns from results_statistics
+    # Start with key identification columns
     column_order = ['Event', 'Trial', 'Fault_Timestamp', 'INV_kW', 'RLC_kW', 
                     'Vrms_initial', 'Vrms_min', 'Vmax', 'Imax', 'max_voltage_thd',
                     'VA_below_95_time', 'VB_below_95_time', 'VC_below_95_time',
                     'VA_below_95_duration', 'VB_below_95_duration', 'VC_below_95_duration',
                     'peak_violation']
     
+    # Add all the multi-threshold voltage sag duration columns
+    threshold_columns = []
+    for phase in ['VA', 'VB', 'VC']:
+        for threshold in ['0', '70', '73', '80', '86', '88', '89', '90']:
+            col_name = f'{phase}_below_{threshold}_duration'
+            if col_name in joined_results.columns:
+                threshold_columns.append(col_name)
+    
+    column_order.extend(threshold_columns)
+    
+    # Add any remaining columns that might exist
+    remaining_cols = [col for col in joined_results.columns if col not in column_order]
+    column_order.extend(remaining_cols)
+    
     # Reorder columns (only include columns that exist)
-    joined_results = joined_results[column_order]
+    joined_results = joined_results[[col for col in column_order if col in joined_results.columns]]
     
     print(f"Successfully merged {len(joined_results)} records")
     print(f"Columns: {list(joined_results.columns)}")
