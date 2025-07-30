@@ -22,6 +22,6 @@ def convert_cev_to_csv(cev_folder, csv_folder):
                     writer.writerow(row)
 
 if __name__ == "__main__":
-    cev_folder = "SELevents07012025/raw"
-    csv_folder = "SELevents07012025_csv"
+    cev_folder = "SEL_events07232025"
+    csv_folder = "SEL_events07232025_csv"
     convert_cev_to_csv(cev_folder, csv_folder)
