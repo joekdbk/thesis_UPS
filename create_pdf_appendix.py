@@ -183,9 +183,9 @@ class AppendixGenerator:
     def format_power_string(self, power):
         """Format power value for display."""
         if power >= 0:
-            return f"{power}W"
+            return f"{power}kW"
         else:
-            return f"{power}W"
+            return f"{power}kW"
 
     def create_thd_table_content(self, csv_path):
         """Read THD table CSV and format it for PDF inclusion."""
